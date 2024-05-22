@@ -26,7 +26,13 @@ jobs:
       - name: Apply Patches
         run: ./gradlew applyPatches --no-daemon --stacktrace
       - name: Build and publish
-        run: ./gradlew publish --no-daemon --stacktrace
+        run: ./gradlew createMojmapPaperclipJar publish --no-daemon --stacktrace
         env:
           ORG_GRADLE_PROJECT_lucyydotpSnapshotsUsername: ${{ secrets.MAVEN_USERNAME }}
           ORG_GRADLE_PROJECT_lucyydotpSnapshotsPassword: ${{ secrets.MAVEN_PASSWORD }}
+      - name: Upload jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: paperclip
+          path: |
+            build/libs/marionette-paperclip-*.jar
