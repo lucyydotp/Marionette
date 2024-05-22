@@ -1,0 +1,317 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Lucy Poulton <lucy.poulton@noxcrew.com>
+Date: Tue, 21 May 2024 00:40:20 +0100
+Subject: [PATCH] Marionette API
+
+
+diff --git a/src/main/java/me/lucyydotp/marionette/ai/MarionetteBodyControl.java b/src/main/java/me/lucyydotp/marionette/ai/MarionetteBodyControl.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..24b6d13b46ddad2940e46adec5a53ade28a4224c
+--- /dev/null
++++ b/src/main/java/me/lucyydotp/marionette/ai/MarionetteBodyControl.java
+@@ -0,0 +1,45 @@
++package me.lucyydotp.marionette.ai;
++
++import net.minecraft.util.Mth;
++import net.minecraft.world.entity.Mob;
++import net.minecraft.world.entity.ai.control.BodyRotationControl;
++
++/**
++ * Replicates player body rotation in relation to their head.
++ * <p>
++ * Mobs have separate Y rotations for their head, body, and overall. This doesn't make much sense for players, who
++ * always have manual control over their head (and, by extension, their overall rotation). Unlike mobs, who can turn
++ * their heads and have their bodies catch up later, player bodies always update instantaneously. This class replicates
++ * that behaviour.
++ */
++public class MarionetteBodyControl extends BodyRotationControl {
++
++    private final Mob mob;
++
++    public MarionetteBodyControl(Mob entity) {
++        super(entity);
++        this.mob = entity;
++    }
++
++    @Override
++    public void clientTick() {
++        // Sync overall rotation with head rotation.
++        this.mob.setYRot(this.mob.getYHeadRot());
++
++        // Instant update if they're moving.
++        // This also instantly updates if they punch but that's not triggered here.
++        if (this.isMoving()) {
++            this.mob.yBodyRot = this.mob.getYRot();
++        } else {
++            // If they're not moving, clamp the body to ±45° from the head.
++            this.mob.yBodyRot = Mth.rotateIfNecessary(this.mob.yBodyRot, this.mob.yHeadRot, this.mob.getMaxHeadYRot());
++        }
++    }
++
++    // Copy-paste from super.
++    private boolean isMoving() {
++        double d = this.mob.getX() - this.mob.xo;
++        double e = this.mob.getZ() - this.mob.zo;
++        return d * d + e * e > 2.5000003E-7F;
++    }
++}
+diff --git a/src/main/java/me/lucyydotp/marionette/ai/MarionetteMoveControl.java b/src/main/java/me/lucyydotp/marionette/ai/MarionetteMoveControl.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..abd112f202592b6109449bf74c44e052a9cccfb7
+--- /dev/null
++++ b/src/main/java/me/lucyydotp/marionette/ai/MarionetteMoveControl.java
+@@ -0,0 +1,33 @@
++package me.lucyydotp.marionette.ai;
++
++import me.lucyydotp.marionette.entity.MarionetteMob;
++import net.minecraft.world.entity.ai.control.MoveControl;
++
++/**
++ * Adjusts movement speed depending on player state (sneaking, sprinting etc.) to mimic client-sided player movement.
++ */
++public class MarionetteMoveControl extends MoveControl {
++    private final MarionetteMob marionette;
++
++    public MarionetteMoveControl(MarionetteMob entity) {
++        super(entity);
++        this.marionette = entity;
++    }
++
++    private double speedModifierForPose() {
++        if (this.marionette.isSprinting()) {
++            // Go faster when sprinting.
++            return 1.2;
++        } else if (this.marionette.isShiftKeyDown()) {
++            // Go slower when sneaking.
++            return 0.5;
++        }
++        return 1;
++    }
++
++    @Override
++    public void tick() {
++        this.speedModifier = speedModifierForPose();
++        super.tick();
++    }
++}
+diff --git a/src/main/java/me/lucyydotp/marionette/entity/CraftMarionette.java b/src/main/java/me/lucyydotp/marionette/entity/CraftMarionette.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..701b66ec46e2b178986bdc394218ee06d952cc31
+--- /dev/null
++++ b/src/main/java/me/lucyydotp/marionette/entity/CraftMarionette.java
+@@ -0,0 +1,22 @@
++package me.lucyydotp.marionette.entity;
++
++import org.bukkit.craftbukkit.CraftServer;
++import org.bukkit.craftbukkit.entity.CraftMob;
++
++public class CraftMarionette extends CraftMob implements Marionette {
++
++    @Override
++    public MarionetteMob getHandle() {
++        return (MarionetteMob) super.getHandle();
++    }
++
++    public CraftMarionette(CraftServer server, MarionetteMob entity) {
++        super(server, entity);
++        super.setPersistent(false);
++    }
++
++    @Override
++    public void setPersistent(boolean persistent) {
++        throw new UnsupportedOperationException("Marionettes are not persistent");
++    }
++}
+diff --git a/src/main/java/me/lucyydotp/marionette/entity/MarionetteMob.java b/src/main/java/me/lucyydotp/marionette/entity/MarionetteMob.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..45096e53fb95dfe212136258dbd1b253d6f8293e
+--- /dev/null
++++ b/src/main/java/me/lucyydotp/marionette/entity/MarionetteMob.java
+@@ -0,0 +1,106 @@
++package me.lucyydotp.marionette.entity;
++
++import com.mojang.authlib.GameProfile;
++import me.lucyydotp.marionette.ai.MarionetteBodyControl;
++import me.lucyydotp.marionette.ai.MarionetteMoveControl;
++import net.minecraft.core.Holder;
++import net.minecraft.network.protocol.Packet;
++import net.minecraft.network.protocol.game.ClientGamePacketListener;
++import net.minecraft.network.protocol.game.ClientboundPlayerInfoUpdatePacket;
++import net.minecraft.world.entity.EntityType;
++import net.minecraft.world.entity.Mob;
++import net.minecraft.world.entity.Pose;
++import net.minecraft.world.entity.ai.attributes.Attribute;
++import net.minecraft.world.entity.ai.control.BodyRotationControl;
++import net.minecraft.world.level.GameType;
++import net.minecraft.world.level.Level;
++import org.jetbrains.annotations.NotNull;
++import org.jetbrains.annotations.Nullable;
++
++import java.util.EnumSet;
++import java.util.List;
++
++import static net.minecraft.world.entity.ai.attributes.Attributes.FOLLOW_RANGE;
++import static net.minecraft.world.entity.ai.attributes.Attributes.MOVEMENT_SPEED;
++
++/**
++ * A mob that looks like a player.
++ */
++public class MarionetteMob extends Mob {
++
++    private final @Nullable GameProfile profile;
++
++    public MarionetteMob(
++            Level world
++    ) {
++        // This is disgusting, but we can't add a custom entity type because it doesn't exist on the client.
++        //noinspection unchecked
++        super((EntityType<? extends Mob>) (Object) EntityType.PLAYER, world);
++        this.profile = new GameProfile(this.uuid, "Marionette" + this.hashCode());
++        this.moveControl = new MarionetteMoveControl(this);
++    }
++
++    @Override
++    protected @NotNull BodyRotationControl createBodyControl() {
++        return new MarionetteBodyControl(this);
++    }
++
++    @Override
++    public double getAttributeValue(@NotNull Holder<Attribute> attribute) {
++        // FIXME: this is horrid.
++        //  it's like this because attribute values are added in DefaultAttributes as a map keyed by EntityType, which
++        //  is a problem because we have no entity type as mentioned above
++        if (attribute == FOLLOW_RANGE) return 128;
++        if (attribute == MOVEMENT_SPEED) return 0.3;
++        return super.getAttributeValue(attribute);
++    }
++
++    /**
++     * Visually crouch when sneaking.
++     */
++    @Override
++    public void setShiftKeyDown(boolean sneaking) {
++        super.setShiftKeyDown(sneaking);
++        this.setPose(sneaking ? Pose.CROUCHING : Pose.STANDING);
++    }
++
++    @Override
++    public int getHeadRotSpeed() {
++        // FIXME: find a meaningful value
++        return 40;
++    }
++
++    /**
++     * Clamps the player's max head Y rotation to match vanilla players.
++     */
++    @Override
++    public int getMaxHeadYRot() {
++        return 45;
++    }
++
++    /**
++     * Creates an info update packet containing the player's profile.
++     */
++    public @NotNull Packet<ClientGamePacketListener> initialPlayerDataPacket() {
++        return new ClientboundPlayerInfoUpdatePacket(
++                EnumSet.of(
++                        ClientboundPlayerInfoUpdatePacket.Action.ADD_PLAYER,
++                        ClientboundPlayerInfoUpdatePacket.Action.UPDATE_GAME_MODE,
++                        ClientboundPlayerInfoUpdatePacket.Action.UPDATE_LISTED,
++                        ClientboundPlayerInfoUpdatePacket.Action.UPDATE_LATENCY,
++                        ClientboundPlayerInfoUpdatePacket.Action.UPDATE_DISPLAY_NAME
++                ),
++                List.of(
++                        new ClientboundPlayerInfoUpdatePacket.Entry(
++                                this.uuid,
++                                this.profile,
++                                false,
++                                0,
++                                GameType.ADVENTURE,
++                                null,
++                                null
++                        )
++                )
++        );
++    }
++}
+diff --git a/src/main/java/net/minecraft/server/level/ServerEntity.java b/src/main/java/net/minecraft/server/level/ServerEntity.java
+index f16a69775332a08ed0e87d27acd0fc959359694c..0e4544084353b7df19ae55458a9a3eeb6d22f3d1 100644
+--- a/src/main/java/net/minecraft/server/level/ServerEntity.java
++++ b/src/main/java/net/minecraft/server/level/ServerEntity.java
+@@ -313,6 +313,12 @@ public class ServerEntity {
+             // CraftBukkit end
+         }
+
++        // Marionette start - get player info packet
++        if (this.entity instanceof me.lucyydotp.marionette.entity.MarionetteMob) {
++            sender.accept(((me.lucyydotp.marionette.entity.MarionetteMob) this.entity).initialPlayerDataPacket());
++        }
++        // Marionette end
++
+         Packet<ClientGamePacketListener> packet = this.entity.getAddEntityPacket();
+
+         this.yHeadRotp = Mth.floor(this.entity.getYHeadRot() * 256.0F / 360.0F);
+diff --git a/src/main/java/net/minecraft/world/entity/Mob.java b/src/main/java/net/minecraft/world/entity/Mob.java
+index e89f9c3e887601d8461eb967ae0bf582b672f631..f5fd434c88cae1d9e40a9118ef08e5aa50c3f204 100644
+--- a/src/main/java/net/minecraft/world/entity/Mob.java
++++ b/src/main/java/net/minecraft/world/entity/Mob.java
+@@ -1402,7 +1402,12 @@ public abstract class Mob extends LivingEntity implements EquipmentUser, Targeti
+     public SpawnGroupData finalizeSpawn(ServerLevelAccessor world, DifficultyInstance difficulty, MobSpawnType spawnReason, @Nullable SpawnGroupData entityData) {
+         RandomSource randomsource = world.getRandom();
+
+-        this.getAttribute(Attributes.FOLLOW_RANGE).addPermanentModifier(new AttributeModifier("Random spawn bonus", randomsource.triangle(0.0D, 0.11485000000000001D), AttributeModifier.Operation.ADD_MULTIPLIED_BASE));
++        // Marionette start - don't add modifier if null
++        final var followRangeAttribute = this.getAttribute(Attributes.FOLLOW_RANGE);
++        if (followRangeAttribute != null) {
++            followRangeAttribute.addPermanentModifier(new AttributeModifier("Random spawn bonus", randomsource.triangle(0.0D, 0.11485000000000001D), AttributeModifier.Operation.ADD_MULTIPLIED_BASE));
++        }
++        // Marionette end
+         this.setLeftHanded(randomsource.nextFloat() < 0.05F);
+         return entityData;
+     }
+diff --git a/src/main/java/org/bukkit/craftbukkit/entity/CraftEntityType.java b/src/main/java/org/bukkit/craftbukkit/entity/CraftEntityType.java
+index 266b616419a47f518a43b990cc7cbb4516beda03..f45c3f6df03ed72466ba3ff0b0705d59200781a3 100644
+--- a/src/main/java/org/bukkit/craftbukkit/entity/CraftEntityType.java
++++ b/src/main/java/org/bukkit/craftbukkit/entity/CraftEntityType.java
+@@ -27,6 +27,11 @@ public class CraftEntityType {
+     private static final java.util.Map<EntityType, net.minecraft.resources.ResourceKey<net.minecraft.world.entity.EntityType<?>>> KEY_CACHE = java.util.Collections.synchronizedMap(new java.util.EnumMap<>(EntityType.class)); // Paper
+     public static net.minecraft.world.entity.EntityType<?> bukkitToMinecraft(EntityType bukkit) {
+         Preconditions.checkArgument(bukkit != null);
++        // Marionette start - jank
++        if (bukkit == EntityType.MARIONETTE) {
++            return net.minecraft.world.entity.EntityType.PLAYER;
++        }
++        // Marionette end
+         return CraftRegistry.getMinecraftRegistry(Registries.ENTITY_TYPE)
+                 .getOptional(KEY_CACHE.computeIfAbsent(bukkit, type -> net.minecraft.resources.ResourceKey.create(Registries.ENTITY_TYPE, CraftNamespacedKey.toMinecraft(type.getKey())))).orElseThrow();
+     }
+diff --git a/src/main/java/org/bukkit/craftbukkit/entity/CraftEntityTypes.java b/src/main/java/org/bukkit/craftbukkit/entity/CraftEntityTypes.java
+index 405caaff1459d8928f91be0fc85213b80ee8b8af..9716f973ca7a1eefc292a82b27293efd4818f9e8 100644
+--- a/src/main/java/org/bukkit/craftbukkit/entity/CraftEntityTypes.java
++++ b/src/main/java/org/bukkit/craftbukkit/entity/CraftEntityTypes.java
+@@ -425,7 +425,24 @@ public final class CraftEntityTypes {
+
+         // None spawn able
+         register(new EntityTypeData<>(EntityType.FISHING_BOBBER, FishHook.class, CraftFishHook::new, null)); // Cannot spawn a fish hook
+-        register(new EntityTypeData<>(EntityType.PLAYER, Player.class, CraftPlayer::new, null)); // Cannot spawn a player
++        // Marionette start - handle marionettes as regular players
++        register(new EntityTypeData<>(EntityType.PLAYER, (Class<Entity>) (Object) Player.class, (server, entity) -> {
++            if (entity instanceof me.lucyydotp.marionette.entity.MarionetteMob)
++                return new me.lucyydotp.marionette.entity.CraftMarionette(server, (me.lucyydotp.marionette.entity.MarionetteMob) entity);
++            return new CraftPlayer(server, (net.minecraft.server.level.ServerPlayer) entity);
++        }, null)); // Cannot spawn a player
++        // Marionette end
++        // Marionette start - marionette entity type
++        register(new EntityTypeData<>(
++                EntityType.MARIONETTE,
++                me.lucyydotp.marionette.entity.Marionette.class,
++                me.lucyydotp.marionette.entity.CraftMarionette::new,
++                CraftEntityTypes.combine(
++                        ctx -> new me.lucyydotp.marionette.entity.MarionetteMob(ctx.minecraftWorld()),
++                        ABS_MOVE
++                )
++        ));
++        // Marionette end
+     }
+
+     private static void register(EntityTypeData<?, ?> typeData) {
