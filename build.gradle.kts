@@ -1,5 +1,6 @@
 plugins {
     java
+    `maven-publish`
     id("io.papermc.paperweight.patcher") version "1.7.1"
 }
 
@@ -12,6 +13,17 @@ allprojects {
     java {
         toolchain {
             languageVersion = JavaLanguageVersion.of(21)
+        }
+    }
+
+    publishing {
+        repositories {
+            maven {
+                name = "lucyydotpSnapshots"
+                url = uri("https://maven.lucyydotp.me/snapshots")
+                // https://docs.gradle.org/current/samples/sample_publishing_credentials.html
+                credentials(PasswordCredentials::class)
+            }
         }
     }
 }
@@ -68,6 +80,23 @@ paperweight {
             upstreamDirPath = "paper-api-generator/generated"
             patchDir = layout.projectDirectory.dir("patches/generatedApi")
             outputDir = layout.projectDirectory.dir("paper-api-generator/generated")
+        }
+    }
+}
+
+tasks.generateDevelopmentBundle {
+    apiCoordinates = "$group:$name-api"
+    libraryRepositories = listOf(
+        "https://repo.maven.apache.org/maven2/",
+        paperMavenPublicUrl,
+        "https://maven.lucyydotp.me/snapshots",
+    )
+}
+
+publishing {
+    publications.create<MavenPublication>("devBundle") {
+        artifact(tasks.generateDevelopmentBundle) {
+            artifactId = "dev-bundle"
         }
     }
 }

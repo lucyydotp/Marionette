@@ -1,10 +1,9 @@
 # Based on Purpur's pipeline
 # https://github.com/PurpurMC/Purpur/blob/ver/1.20.6/.github/workflows/build.yml
 
-name: Build
+name: Build and Release
 on:
   workflow_dispatch:
-  pull_request:
   push:
     branches:
       - "main"
@@ -26,5 +25,8 @@ jobs:
         run: git config --global user.email "no-reply@github.com" && git config --global user.name "Github Actions"
       - name: Apply Patches
         run: ./gradlew applyPatches --no-daemon --stacktrace
-      - name: Build
-        run: ./gradlew build --no-daemon --stacktrace
+      - name: Build and publish
+        run: ./gradlew publish --no-daemon --stacktrace
+        env:
+          ORG_GRADLE_PROJECT_lucyydotpSnapshotsUsername: ${{ secrets.MAVEN_USERNAME }}
+          ORG_GRADLE_PROJECT_lucyydotpSnapshotsPassword: ${{ secrets.MAVEN_PASSWORD }}
