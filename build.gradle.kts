@@ -85,7 +85,7 @@ paperweight {
 }
 
 tasks.generateDevelopmentBundle {
-    apiCoordinates = "$group:$name-api"
+    apiCoordinates = "$group:${project.name}-api"
     libraryRepositories = listOf(
         "https://repo.maven.apache.org/maven2/",
         paperMavenPublicUrl,
